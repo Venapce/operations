@@ -1,0 +1,126 @@
+{
+  "$schema": "https://venapce.inflowenger.com/schemas/operation-1.json",
+  "schema": 1,
+  "id": "github-commit-security-review",
+  "name": "GitHub commit security review",
+  "version": "1.1.0",
+  "description": "Clone a repository on the plugin host, have a Claude agent read the last N commits in that checkout, and write one Stage row per security finding — schema-bound, deduplicated, and left at disposition `pending` for a human to promote.",
+  "readme": "README.md",
+  "license": "Apache-2.0",
+  "authors": [
+    "inflowenger"
+  ],
+  "tags": [
+    "github",
+    "code-review",
+    "claude-agent",
+    "appsec",
+    "supply-chain"
+  ],
+  "scale": [
+    "vps",
+    "smb",
+    "fleet"
+  ],
+  "venapce": {
+    "min": "0.6.0"
+  },
+  "params": {
+    "owner": {
+      "type": "string",
+      "label": "GitHub organization / owner",
+      "description": "The owner the repository belongs to, used when Repository is given as a bare name. It must match the organization / owner set on the GitHub account profile you bind the two GitHub nodes to — those actions take a repository name only and read the owner from that profile.",
+      "required": true
+    },
+    "repo": {
+      "type": "string",
+      "label": "Repository",
+      "description": "The repository. A bare name (fiberValidation), owner/name, or a GitHub URL — including an ssh remote or a link to a file inside it — all work. When the value carries an owner, it overrides the Owner param, since it is the more specific statement.",
+      "required": true
+    },
+    "commits": {
+      "type": "number",
+      "label": "Commits to review",
+      "description": "How many commits back from the branch head to read. The clone is made one commit deeper so the oldest reviewed commit still has a parent to diff against.",
+      "default": 3,
+      "required": true
+    },
+    "ref": {
+      "type": "string",
+      "label": "Branch, tag or commit",
+      "description": "What to check out. Leave empty for the repository's default branch.",
+      "default": ""
+    },
+    "severityFloor": {
+      "type": "string",
+      "label": "Severity floor",
+      "description": "Findings below this severity are dropped before anything is written to Stage.",
+      "default": "low",
+      "enum": [
+        "info",
+        "low",
+        "medium",
+        "high",
+        "critical"
+      ]
+    }
+  },
+  "flows": [
+    {
+      "key": "commit-security-review",
+      "file": "flows/commit-security-review.flow.json",
+      "title": "GitHub commit security review → venapce Stage",
+      "description": "Clone + commit list in parallel → agent review of the checkout with a schema-bound answer → normalize → map onto the Stage schema → one Stage row per finding.",
+      "role": "entry",
+      "writes": [
+        "stage"
+      ],
+      "step": 1,
+      "doc": "docs/commit-security-review.md"
+    }
+  ],
+  "requires": {
+    "plugins": [
+      {
+        "name": "Github-Dev",
+        "actions": [
+          "github.repo.clone",
+          "github.activity.list"
+        ],
+        "note": "Needs a GitHub account connected in FloMorphic → Connect, and git on the plugin's host."
+      },
+      {
+        "name": "Claude",
+        "actions": [
+          "claude.agent.run"
+        ],
+        "note": "Needs Claude Code installed on the plugin's host and either logged in or given an API key in its settings profile."
+      },
+      {
+        "name": "venapce",
+        "actions": [
+          "db.stages.upsert"
+        ]
+      }
+    ],
+    "settings": [
+      {
+        "kind": "other",
+        "for": "Clone the repository, List the recent commits",
+        "note": "A GitHub account profile whose organization is the `owner` param."
+      },
+      {
+        "kind": "other",
+        "for": "Review the commits with Claude",
+        "note": "A Claude profile whose workspace root contains the GitHub plugin's clone root (GITHUB_OC_CLONE_ROOT, or ./workspace beside that plugin). Both plugins must run on the same host, or share that directory."
+      }
+    ]
+  },
+  "provides": {
+    "tags": [
+      "github",
+      "code-review",
+      "claude-agent"
+    ]
+  }
+}

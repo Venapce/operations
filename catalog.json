@@ -1,0 +1,46 @@
+{
+  "$schema": "https://venapce.inflowenger.com/schemas/catalog-1.json",
+  "schema": 1,
+  "name": "Venapce operations",
+  "description": "Expert-authored operation packages for the Venapce panel. Paste this repository's URL into Operations → Import to browse the catalog, or point the importer at a single package folder.",
+  "operations": [
+    {
+      "id": "linux-fleet-http-audit",
+      "path": "linux-fleet-http-audit",
+      "name": "Linux fleet HTTP audit",
+      "version": "1.0.0",
+      "description": "Who is serving HTTP on the fleet, where, and under which hostnames — one Stage row per web server.",
+      "tags": [
+        "linux",
+        "http",
+        "nginx",
+        "exposure",
+        "inventory"
+      ],
+      "scale": [
+        "vps",
+        "fleet",
+        "smb"
+      ]
+    },
+    {
+      "id": "github-commit-security-review",
+      "path": "github-commit-security-review",
+      "name": "GitHub commit security review",
+      "version": "1.1.0",
+      "description": "Clone a repository, have a Claude agent read the last N commits in that checkout, and stage one row per security finding for a human to promote.",
+      "tags": [
+        "github",
+        "code-review",
+        "claude-agent",
+        "appsec",
+        "supply-chain"
+      ],
+      "scale": [
+        "vps",
+        "smb",
+        "fleet"
+      ]
+    }
+  ]
+}

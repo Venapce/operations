@@ -1,0 +1,89 @@
+{
+  "$schema": "https://venapce.inflowenger.com/schemas/operation-1.json",
+  "schema": 1,
+  "id": "linux-fleet-http-audit",
+  "name": "Linux fleet HTTP audit",
+  "version": "1.0.0",
+  "description": "Ask a whole Linux fleet who is serving HTTP, where (host or Docker), and under which hostnames \u2014 three fleet-wide osquery sweeps, per-node probes for nginx config, TLS names and /etc/hosts, and one evidence row per web server written to Stage.",
+  "readme": "README.md",
+  "homepage": "https://github.com/FloMorphic/flow-cookbook/tree/main/linux-fleet-http-audit",
+  "license": "Apache-2.0",
+  "authors": [
+    "inflowenger"
+  ],
+  "tags": [
+    "linux",
+    "http",
+    "nginx",
+    "exposure",
+    "inventory"
+  ],
+  "scale": [
+    "vps",
+    "fleet",
+    "smb"
+  ],
+  "venapce": {
+    "min": "0.6.0"
+  },
+  "params": {
+    "env": {
+      "type": "string",
+      "label": "osctrl environment",
+      "description": "The osctrl environment the sweeps query.",
+      "default": "default",
+      "required": true
+    },
+    "fleetTags": {
+      "type": "string[]",
+      "label": "Fleet tags",
+      "description": "osctrl tags selecting the Linux nodes to sweep (queryByTags).",
+      "default": [
+        "default"
+      ],
+      "required": true
+    }
+  },
+  "flows": [
+    {
+      "key": "http-audit",
+      "file": "flows/http-audit.flow.json",
+      "title": "Linux fleet \u2014 HTTP / nginx + served hostnames audit",
+      "description": "Three parallel sweeps \u2192 per-node inventory \u2192 rule \u2192 four per-target probes \u2192 report \u2192 one Stage row per host.",
+      "role": "entry",
+      "schedule": "0 */6 * * *",
+      "writes": [
+        "stage"
+      ],
+      "step": 1,
+      "doc": "docs/http-audit.md"
+    }
+  ],
+  "requires": {
+    "osctrl": {
+      "required": true,
+      "targets": [
+        "linux"
+      ],
+      "minNodes": 1,
+      "note": "Linux nodes enrolled and carrying the tags in `fleetTags`."
+    },
+    "plugins": [
+      {
+        "name": "venapce",
+        "actions": [
+          "osquery.query",
+          "osquery.queryByTags",
+          "db.stages.upsert"
+        ]
+      }
+    ]
+  },
+  "provides": {
+    "tags": [
+      "http-audit",
+      "nginx",
+      "linux"
+    ]
+  }
+}

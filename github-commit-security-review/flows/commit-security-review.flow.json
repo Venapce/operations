@@ -1,0 +1,388 @@
+{
+  "flomorphic": {
+    "kind": "workflow",
+    "version": 1
+  },
+  "title": "GitHub commit security review → venapce Stage",
+  "plugins": [
+    {
+      "name": "Github-Dev",
+      "actions": [
+        "github.repo.clone",
+        "github.activity.list"
+      ]
+    },
+    {
+      "name": "Claude",
+      "actions": [
+        "claude.agent.run"
+      ]
+    },
+    {
+      "name": "venapce",
+      "actions": [
+        "db.stages.upsert"
+      ]
+    },
+    {
+      "name": "Cast / Mapping",
+      "actions": [
+        "run"
+      ],
+      "note": "FloMorphic builtin (aaaa-bbbb-cccc-cast)."
+    }
+  ],
+  "nodes": [
+    {
+      "ref": "start",
+      "kind": "startNode",
+      "title": "Start",
+      "position": {
+        "x": 80,
+        "y": 320
+      }
+    },
+    {
+      "ref": "seed-the-scan-parameters",
+      "kind": "js",
+      "title": "Seed the scan parameters",
+      "key": "scan",
+      "scope": "$",
+      "position": {
+        "x": 420,
+        "y": 320
+      },
+      "data": {
+        "logic_rule": "let given = (input && input.scan) || {}\nlet defaults = { owner: '${param.owner}', repo: '${param.repo}', ref: '${param.ref}', commits: ${param.commits}, severityFloor: '${param.severityFloor}', destination: '' }\nlet scan = {}\nfor (let k in defaults) { scan[k] = defaults[k] }\nfor (let k in given) {\n  let v = given[k]\n  if (v !== null && v !== undefined && v !== '') { scan[k] = v }\n}\n// `repo` is whatever the operator pasted: a bare name, owner/name, an https URL,\n// an scp-style ssh remote, or a link to a file inside the repository. Reduce it\n// to an owner and a name so one field accepts all of them — and let an owner\n// found inside it win over the separate param, because it is the more specific\n// statement of intent.\nlet parseRepo = function (raw, fallbackOwner) {\n  let t = ('' + (raw || '')).trim()\n  if (t.indexOf('://') >= 0) { t = t.substring(t.indexOf('://') + 3) }\n  if (t.indexOf('@') >= 0) { t = t.substring(t.indexOf('@') + 1) }\n  t = t.split('?')[0]\n  t = t.split('#')[0]\n  t = t.replace(':', '/')\n  let parts = []\n  let chunks = t.split('/')\n  for (let i = 0; i < chunks.length; i++) {\n    let c = chunks[i].trim()\n    if (c) { parts.push(c) }\n  }\n  if (parts.length > 1 && parts[0].indexOf('.') >= 0) { parts.shift() }\n  let owner = fallbackOwner\n  let name = ''\n  if (parts.length >= 2) { owner = parts[0]; name = parts[1] }\n  else if (parts.length === 1) { name = parts[0] }\n  if (name.length > 4 && name.substring(name.length - 4) === '.git') {\n    name = name.substring(0, name.length - 4)\n  }\n  return { owner: owner, name: name }\n}\n\nlet parsed = parseRepo(scan.repo, scan.owner)\nscan.repoInput = scan.repo\nscan.owner = parsed.owner\nscan.repo = parsed.name\n\nlet n = parseInt('' + scan.commits, 10)\nscan.commits = (n > 0 && n <= 50) ? n : 3\nscan.depth = scan.commits + 1\nif (!scan.destination) { scan.destination = 'venapce-scan/' + scan.owner + '/' + scan.repo }\nscan.target = scan.owner + '/' + scan.repo\nscan\n"
+      },
+      "note": "The package's variables. Defaults live here; a value already on the context wins, so the operator can re-run the same flow against another repository by editing the context alone."
+    },
+    {
+      "ref": "clone-the-repository",
+      "kind": "plugin",
+      "title": "Clone the repository",
+      "key": "clone",
+      "scope": "$",
+      "position": {
+        "x": 780,
+        "y": 180
+      },
+      "data": {
+        "action": "github.repo.clone",
+        "body": {
+          "repo": "{{$.scan.repo}}",
+          "destination": "{{$.scan.destination}}",
+          "ref": "{{$.scan.ref}}",
+          "depth": "{{$.scan.depth}}",
+          "singleBranch": true,
+          "submodules": false,
+          "minPermission": "pull",
+          "transport": "https",
+          "onExisting": "replace"
+        }
+      },
+      "note": "Runs git on the GitHub plugin's host, inside its clone root. Depth is commits+1 so every reviewed commit still has a parent to diff against. The owner comes from the bound account profile, not from this node."
+    },
+    {
+      "ref": "list-the-recent-commits",
+      "kind": "plugin",
+      "title": "List the recent commits",
+      "key": "commits",
+      "scope": "$",
+      "position": {
+        "x": 780,
+        "y": 460
+      },
+      "data": {
+        "action": "github.activity.list",
+        "body": {
+          "op": "commits",
+          "repo": "{{$.scan.repo}}",
+          "sha": "{{$.scan.ref}}",
+          "perPage": 30,
+          "page": 1
+        }
+      },
+      "note": "GitHub's own record of the commits — author, date, URL — so a staged row carries provenance the clone cannot prove. Independent of the clone, so it runs beside it."
+    },
+    {
+      "ref": "wait-for-the-checkout-and-the-log",
+      "kind": "promissall",
+      "title": "Wait for the checkout and the log",
+      "scope": "$",
+      "position": {
+        "x": 1140,
+        "y": 320
+      },
+      "note": "The review needs both branches; without this barrier it would run twice."
+    },
+    {
+      "ref": "review-the-commits-with-claude",
+      "kind": "plugin",
+      "title": "Review the commits with Claude",
+      "key": "review",
+      "scope": "$",
+      "position": {
+        "x": 1500,
+        "y": 320
+      },
+      "data": {
+        "action": "claude.agent.run",
+        "body": {
+          "prompt": "Review the last {{$.scan.commits}} commits of the git repository checked out in your workspace.\n\nRepository: {{$.scan.target}}   branch: {{$.clone.branch}}   HEAD: {{$.clone.commit}}\n\nHow to work — do all of it, in this order:\n1. `git log --oneline -n {{$.scan.commits}}` to fix which commits you are judging.\n2. For EACH of those commits, one at a time: `git show --stat <sha>` for the shape of the change, then `git show <sha>` for the whole diff. Read every diff in full — do not pipe a diff through `head`, and do not read several commits in one command. A truncated diff is not a read commit.\n3. Where a diff alone cannot tell you whether something is reachable, open the surrounding file with Read, and use Grep to find who calls it or what else sets the same variable.\n4. Record every commit you read in `reviewedCommits`, with its sha, its subject and the paths it touched. This is the evidence that the review happened: a verdict over an empty list will be rejected.\n\nJudge ONLY what those commits introduce or leave behind. A problem in a file they never touched is out of scope — but a change that WEAKENS something (a check removed, TLS turned off, a header now trusted, a default loosened) is in scope even when the weak thing predates it.\n\nWhat counts as a finding: a hard-coded credential, token or private key; a command, SQL or template injection; an unsafe shell pipeline (piping a download into a shell, an unquoted variable in a dangerous position, `eval` on input); a path traversal; a world-writable or 0777 path; a disabled TLS or certificate check; a client-controlled header or address now trusted for identity or access; weak or hand-rolled crypto; a default that is insecure if the operator does not change it; an authorization check that can be skipped; a dependency moved to an unsafe or unpinned source; or a secret written to a log, a file or the process table.\n\nBe strict about false positives — a human triages what you report, and noise costs more than a miss here. A fixture, a test, or an example in documentation is not a vulnerability. If something looks wrong but you cannot show a reachable consequence, either leave it out or report it with falsePositiveRisk high and say in `evidence` why it may be benign.\n\nQuote your evidence: the file, the line and the exact snippet, plus the commit it came from. Never modify, stage or commit anything.\n\nIf the commits you read hold no real security issue, answer verdict `clean` with an empty findings array — but only after reading each one in full. Do not invent findings to look thorough, and do not report `clean` to finish early.",
+          "workspace": "{{$.clone.path}}",
+          "structured": true,
+          "outputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\n    \"verdict\",\n    \"findings\",\n    \"reviewedCommits\"\n  ],\n  \"properties\": {\n    \"verdict\": {\n      \"type\": \"string\",\n      \"enum\": [\n        \"issues_found\",\n        \"clean\"\n      ],\n      \"description\": \"issues_found only when at least one real security problem is reported.\"\n    },\n    \"reviewedCommits\": {\n      \"type\": \"array\",\n      \"description\": \"Every commit you read in full, newest first. A verdict over an empty list is not a review.\",\n      \"items\": {\n        \"type\": \"object\",\n        \"required\": [\n          \"sha\",\n          \"subject\",\n          \"filesChanged\"\n        ],\n        \"properties\": {\n          \"sha\": {\n            \"type\": \"string\"\n          },\n          \"subject\": {\n            \"type\": \"string\",\n            \"description\": \"The commit's own subject line.\"\n          },\n          \"filesChanged\": {\n            \"type\": \"array\",\n            \"items\": {\n              \"type\": \"string\"\n            },\n            \"description\": \"The paths this commit touched, as the diff shows them.\"\n          },\n          \"author\": {\n            \"type\": \"string\"\n          },\n          \"date\": {\n            \"type\": \"string\"\n          }\n        }\n      }\n    },\n    \"findings\": {\n      \"type\": \"array\",\n      \"description\": \"One entry per real security problem these commits introduce or leave behind. Empty when there is none.\",\n      \"items\": {\n        \"type\": \"object\",\n        \"required\": [\n          \"title\",\n          \"severity\",\n          \"confidence\",\n          \"category\",\n          \"summary\"\n        ],\n        \"properties\": {\n          \"title\": {\n            \"type\": \"string\",\n            \"description\": \"One line naming the problem.\"\n          },\n          \"severity\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"critical\",\n              \"high\",\n              \"medium\",\n              \"low\",\n              \"info\"\n            ]\n          },\n          \"confidence\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"high\",\n              \"medium\",\n              \"low\"\n            ]\n          },\n          \"category\": {\n            \"type\": \"string\",\n            \"description\": \"secret, injection, authz, crypto, supply-chain, dos, misconfig or other.\"\n          },\n          \"summary\": {\n            \"type\": \"string\",\n            \"description\": \"What is wrong and what it lets an attacker do.\"\n          },\n          \"file\": {\n            \"type\": \"string\",\n            \"description\": \"Path relative to the repository root.\"\n          },\n          \"line\": {\n            \"type\": \"integer\",\n            \"description\": \"First offending line, 0 when it is not one line.\"\n          },\n          \"commit\": {\n            \"type\": \"string\",\n            \"description\": \"The reviewed commit SHA this came from.\"\n          },\n          \"evidence\": {\n            \"type\": \"string\",\n            \"description\": \"The exact snippet that proves it.\"\n          },\n          \"remediation\": {\n            \"type\": \"string\",\n            \"description\": \"The concrete fix.\"\n          },\n          \"falsePositiveRisk\": {\n            \"type\": \"string\",\n            \"enum\": [\n              \"high\",\n              \"medium\",\n              \"low\"\n            ],\n            \"description\": \"high when it may well be benign in this codebase.\"\n          }\n        }\n      }\n    }\n  }\n}",
+          "tools": [
+            "Read",
+            "Grep",
+            "Glob",
+            "Bash"
+          ],
+          "disallowedTools": [
+            "Write",
+            "Edit",
+            "NotebookEdit",
+            "WebFetch",
+            "WebSearch"
+          ],
+          "permissionMode": "bypassPermissions",
+          "appendSystemPrompt": "You are a read-only security reviewer. Never modify, stage or commit anything in this workspace, and never write files outside it.",
+          "askHuman": false,
+          "session": "new",
+          "effort": "high",
+          "maxTurns": 40,
+          "maxBudgetUsd": 1.5
+        }
+      },
+      "note": "The workspace is wherever the clone node put the checkout, so the agent reads the real tree. Read-only tool set in a throwaway clone, which is why permissions are not asked for. The answer is schema-bound, so the next nodes read fields instead of parsing prose."
+    },
+    {
+      "ref": "did-the-review-find-anything",
+      "kind": "rule",
+      "title": "Did the review find anything?",
+      "scope": "$",
+      "position": {
+        "x": 1860,
+        "y": 320
+      },
+      "data": {
+        "lang": "js",
+        "logic_rule": "let out = (input.review && input.review.output) || {}\nlet list = out.findings || []\nlet decision = list.length > 0 ? 'found' : 'clean'\ndecision\n",
+        "handlers": [
+          {
+            "id": "h_found",
+            "name": "found",
+            "title": "Findings to stage"
+          },
+          {
+            "id": "h_clean",
+            "name": "clean",
+            "title": "Nothing to stage"
+          }
+        ]
+      },
+      "note": "A clean review is an outcome, not a failure — it must not fall through to the writer."
+    },
+    {
+      "ref": "normalize-the-findings",
+      "kind": "js",
+      "title": "Normalize the findings",
+      "key": "findings",
+      "scope": "$",
+      "position": {
+        "x": 2220,
+        "y": 180
+      },
+      "data": {
+        "logic_rule": "let out = (input.review && input.review.output) || {}\nlet raw = out.findings || []\nlet scan = input.scan || {}\nlet clone = input.clone || {}\n\nlet rank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 }\nlet floor = rank[('' + (scan.severityFloor || 'low')).toLowerCase()]\nif (floor === undefined) { floor = 1 }\n\nlet text = function (v) { return (v === null || v === undefined) ? '' : ('' + v) }\nlet slug = function (v) { return text(v).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '').replace(/-+$/, '') }\n\nlet commitRows = []\nlet visit = function (v, depth) {\n  if (v === null || v === undefined || depth > 6) { return }\n  if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) { visit(v[i], depth + 1) } return }\n  if (typeof v !== 'object') { return }\n  if (v.sha) { commitRows.push(v) }\n  for (let k in v) { visit(v[k], depth + 1) }\n}\nvisit(input.commits, 0)\n\nlet commitMetaFor = function (sha) {\n  let want = text(sha)\n  if (!want) { return null }\n  for (let i = 0; i < commitRows.length; i++) {\n    let row = commitRows[i]\n    let got = text(row.sha)\n    if (got && (got === want || got.indexOf(want) === 0 || want.indexOf(got) === 0)) {\n      let c = row.commit || {}\n      let author = c.author || {}\n      return {\n        sha: got,\n        message: text(c.message).split('\\n')[0],\n        author: text(author.name || (row.author && row.author.login)),\n        date: text(author.date),\n        url: text(row.html_url || row.url)\n      }\n    }\n  }\n  return null\n}\n\nlet seen = {}\nlet findings = []\nfor (let i = 0; i < raw.length; i++) {\n  let f = raw[i] || {}\n  let title = text(f.title)\n  if (!title) { continue }\n  let sev = text(f.severity).toLowerCase()\n  if (rank[sev] === undefined) { sev = 'info' }\n  if (rank[sev] < floor) { continue }\n  let file = text(f.file)\n  let line = parseInt('' + f.line, 10)\n  if (!(line > 0)) { line = 0 }\n  let commit = text(f.commit) || text(clone.commit)\n  let fingerprint = 'github:' + scan.target + ':' + file + ':' + line + ':' + slug(title)\n  if (seen[fingerprint]) { continue }\n  seen[fingerprint] = true\n  findings.push({\n    title: title,\n    severity: sev,\n    severityRank: rank[sev],\n    confidence: text(f.confidence).toLowerCase() || 'medium',\n    category: slug(f.category) || 'other',\n    summary: text(f.summary),\n    file: file,\n    line: line,\n    commit: commit,\n    shortCommit: commit.substring(0, 7),\n    commitMeta: commitMetaFor(commit),\n    evidence: text(f.evidence),\n    remediation: text(f.remediation),\n    falsePositiveRisk: text(f.falsePositiveRisk).toLowerCase() || 'unknown',\n    fingerprint: fingerprint,\n    where: file ? (file + (line > 0 ? (':' + line) : '')) : scan.target\n  })\n}\nfindings.sort(function (a, b) { return b.severityRank - a.severityRank })\n\n// Shape each finding into the values the Cast node lifts into Stage columns. The\n// Cast node can only lift a path or write a literal — it cannot compute — so\n// everything that needs computing is done here, and the mapping stays a mapping.\nlet review = input.review || {}\n\n// A Stage title is read in a list, so it is clamped; the model's own wording is\n// kept in full on the row's `data.title`.\nlet clamp = function (v, max) {\n  let t = text(v)\n  return t.length > max ? (t.substring(0, max - 1) + '\\u2026') : t\n}\n\n// Which model actually did the work. `review.model` is whichever model the last\n// message used, and Claude Code bills small side-calls to a cheaper one — so the\n// usage table is the honest record of what reviewed this repository.\nlet models = []\nlet usage = review.usage || {}\nfor (let m in usage) { models.push(m) }\n\nlet repo = {\n  owner: scan.owner,\n  name: scan.repo,\n  target: scan.target,\n  branch: clone.branch || '',\n  url: clone.url || ''\n}\n\nfor (let i = 0; i < findings.length; i++) {\n  let f = findings[i]\n  f.stageTitle = '[' + f.severity + '] ' + clamp(f.title, 96) + ' \\u2014 ' + scan.target + '@' + f.shortCommit\n  f.stageRef = {\n    producer: 'claude-agent',\n    model: review.model || '',\n    models: models,\n    sessionId: review.sessionId || '',\n    fingerprint: f.fingerprint,\n    repo: repo,\n    commit: f.commit,\n    commitMeta: f.commitMeta || null,\n    commitsReviewed: scan.commits,\n    workspace: review.workspace || clone.path || ''\n  }\n  f.stageData = {\n    title: f.title,\n    severity: f.severity,\n    confidence: f.confidence,\n    category: f.category,\n    summary: f.summary,\n    file: f.file,\n    line: f.line,\n    where: f.where,\n    commit: f.commit,\n    evidence: f.evidence,\n    remediation: f.remediation\n  }\n  f.stageMeta = {\n    falsePositiveRisk: f.falsePositiveRisk,\n    severityRank: f.severityRank,\n    severityFloor: scan.severityFloor || '',\n    review: {\n      state: review.state || '',\n      turns: review.turns || 0,\n      costUsd: review.costUsd || 0,\n      observedAt: review.observedAt || 0\n    }\n  }\n}\nfindings\n"
+      },
+      "note": "Stage's tidy-up step: a known severity vocabulary, the floor applied, duplicates dropped on a fingerprint, the GitHub commit record joined on, severity order. Everything a human would otherwise have to clean by hand."
+    },
+    {
+      "ref": "map-each-finding-onto-the-stage-schema",
+      "kind": "cast",
+      "title": "Map each finding onto the Stage schema",
+      "key": "stageRow",
+      "scope": "$.findings[*]",
+      "position": {
+        "x": 2580,
+        "y": 180
+      },
+      "data": {
+        "storeId": "",
+        "mappings": [
+          {
+            "key": "title",
+            "mode": "jsonpath",
+            "value": "{{$this.stageTitle}}"
+          },
+          {
+            "key": "summary",
+            "mode": "jsonpath",
+            "value": "{{$this.summary}}"
+          },
+          {
+            "key": "source",
+            "mode": "static",
+            "value": "github"
+          },
+          {
+            "key": "origin",
+            "mode": "static",
+            "value": "flow:github-commit-security-review"
+          },
+          {
+            "key": "disposition",
+            "mode": "static",
+            "value": "pending"
+          },
+          {
+            "key": "ref",
+            "mode": "jsonpath",
+            "value": "{{$this.stageRef}}"
+          },
+          {
+            "key": "data",
+            "mode": "jsonpath",
+            "value": "{{$this.stageData}}"
+          },
+          {
+            "key": "meta",
+            "mode": "jsonpath",
+            "value": "{{$this.stageMeta}}"
+          }
+        ]
+      },
+      "note": "The mapping node: one Stage row per finding, one drawer row per Stage column — title, summary, source, origin, disposition, and the three JSONB columns (ref = provenance, data = evidence, meta = enrichment). A Cast lifts a path or writes a literal and computes nothing, which is why the normalize node above prepares stageTitle / stageRef / stageData / stageMeta. This is the single node to edit when the Stage schema changes."
+    },
+    {
+      "ref": "stage-each-finding",
+      "kind": "plugin",
+      "title": "Stage each finding",
+      "key": "stageWrite",
+      "scope": "$.findings[*]",
+      "position": {
+        "x": 2940,
+        "y": 180
+      },
+      "data": {
+        "action": "db.stages.upsert",
+        "body": {
+          "title": "{{$this.stageRow.title}}",
+          "summary": "{{$this.stageRow.summary}}",
+          "source": "{{$this.stageRow.source}}",
+          "origin": "{{$this.stageRow.origin}}",
+          "disposition": "{{$this.stageRow.disposition}}",
+          "tags": [
+            "github",
+            "code-review",
+            "claude-agent",
+            "repo:{{$.scan.repo}}",
+            "severity:{{$this.severity}}",
+            "category:{{$this.category}}"
+          ],
+          "ref": "{{$this.stageRow.ref}}",
+          "data": "{{$this.stageRow.data}}",
+          "meta": "{{$this.stageRow.meta}}"
+        }
+      },
+      "note": "One row per finding, disposition `pending` — the Stage inbox. A person promotes a row to a Finding or an Issue from the venapce panel; this flow never decides that."
+    },
+    {
+      "ref": "record-a-clean-review",
+      "kind": "js",
+      "title": "Record a clean review",
+      "key": "reviewSummary",
+      "scope": "$",
+      "position": {
+        "x": 2220,
+        "y": 500
+      },
+      "data": {
+        "logic_rule": "let scan = input.scan || {}\nlet clone = input.clone || {}\nlet r = input.review || {}\nlet out = r.output || {}\nlet reviewSummary = {\n  verdict: out.verdict || 'clean',\n  target: scan.target || '',\n  branch: clone.branch || '',\n  head: clone.commit || '',\n  commitsReviewed: scan.commits || 0,\n  severityFloor: scan.severityFloor || '',\n  staged: 0,\n  note: 'No security issue at or above the severity floor in the reviewed commits — nothing was written to Stage.',\n  turns: r.turns || 0,\n  costUsd: r.costUsd || 0\n}\nreviewSummary\n"
+      },
+      "note": "Leaves the audit trail on the run's context without putting a non-finding into Stage."
+    },
+    {
+      "ref": "note-the-unfinished-review",
+      "kind": "js",
+      "title": "Note the unfinished review",
+      "key": "reviewProblem",
+      "scope": "$",
+      "position": {
+        "x": 1860,
+        "y": 680
+      },
+      "data": {
+        "logic_rule": "let r = input.review || {}\nlet reviewProblem = {\n  state: r.state || 'unknown',\n  reason: r.error || (r.limit && r.limit.reason) || '',\n  text: r.text || '',\n  sessionId: r.sessionId || '',\n  workspace: r.workspace || '',\n  advice: 'Run the review node again to continue the same session, or raise Max turns / Max spend on it.'\n}\nreviewProblem\n"
+      },
+      "note": "Where the agent's Failed and Limit reached ports land, so a run that could not finish says so on the context instead of ending silently. The ports are exclusive, so this runs at most once."
+    }
+  ],
+  "edges": [
+    {
+      "from": "start",
+      "to": "seed-the-scan-parameters"
+    },
+    {
+      "from": "seed-the-scan-parameters",
+      "to": "clone-the-repository"
+    },
+    {
+      "from": "seed-the-scan-parameters",
+      "to": "list-the-recent-commits"
+    },
+    {
+      "from": "clone-the-repository",
+      "to": "wait-for-the-checkout-and-the-log"
+    },
+    {
+      "from": "list-the-recent-commits",
+      "to": "wait-for-the-checkout-and-the-log"
+    },
+    {
+      "from": "wait-for-the-checkout-and-the-log",
+      "to": "review-the-commits-with-claude"
+    },
+    {
+      "from": "review-the-commits-with-claude",
+      "to": "did-the-review-find-anything",
+      "port": "Answer"
+    },
+    {
+      "from": "review-the-commits-with-claude",
+      "to": "note-the-unfinished-review",
+      "port": "Limit reached"
+    },
+    {
+      "from": "review-the-commits-with-claude",
+      "to": "note-the-unfinished-review",
+      "port": "Failed"
+    },
+    {
+      "from": "did-the-review-find-anything",
+      "to": "normalize-the-findings",
+      "port": "found"
+    },
+    {
+      "from": "did-the-review-find-anything",
+      "to": "record-a-clean-review",
+      "port": "clean"
+    },
+    {
+      "from": "normalize-the-findings",
+      "to": "map-each-finding-onto-the-stage-schema"
+    },
+    {
+      "from": "map-each-finding-onto-the-stage-schema",
+      "to": "stage-each-finding"
+    }
+  ],
+  "notes": [
+    "Bind the GitHub node pair to an account profile whose organization is the `owner` param — the clone and commit-list actions take the repository name only; the owner comes from that profile.",
+    "Bind the Claude node to a profile whose workspace root contains the GitHub plugin's clone root (GITHUB_OC_CLONE_ROOT, or ./workspace beside that plugin), or the agent refuses the workspace before it starts.",
+    "Both plugins must run on the same host, or share that directory — the clone is a path on disk, not a payload passed between nodes.",
+    "The mapping node is a Cast bound to no document store — its keys are Stage's columns, not a store schema — so leave Store empty in its drawer."
+  ]
+}
